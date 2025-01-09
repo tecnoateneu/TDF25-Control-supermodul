@@ -4,7 +4,7 @@
 //  Realització per el Temps de Flors 2025
 //  Girona 2024
 //
-//  programació realitzada per Antoni Martorano i Gomis
+//  Programació realitzada per Antoni Martorano i Gomis
 //
 
 #define LCDdebug           // a fi de debugar i veure el que fa
