@@ -1,1 +1,0 @@
-Per documentar l'electrònica.
