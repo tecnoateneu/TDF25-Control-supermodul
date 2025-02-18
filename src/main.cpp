@@ -6,15 +6,15 @@
 //
 //  Programació realitzada per Antoni Martorano i Gomis
 //
-//  DMX
-//
-//
 
 #define LCDdebug           // a fi de debugar i veure el que fa
+//#define CASA               // Si treball a casa canvio l'entorn
+
 
 #include <ESP8266WiFi.h>
 #include <WiFiUdp.h>
 #include <Wire.h>
+#include <Adafruit_PWMServoDriver.h>
 
 // Configuració del display
 #define LCD_ADDR 0x27 // Adreça I2C del display
@@ -22,22 +22,15 @@
 #define LCD_ROWS 4    // Nombre de files
 
 #include <lcdi2c.h>
-#include <DMX/DMX.h>
 
-
-#define addressi 0x20 // Adreça LCD
+#define addressi 0x20
 
 // Configuració de la xarxa WiFi
 const char* ssid = "TDFMQTT0";
 const char* password = "T3mpsD3F1ors";
-
-// Defineix els pins TX i Output Enable
-const int TX_PIN = 4;
-const int OUTPUT_ENABLE_PIN = 16;
-
-ESP8266DMXShield dmxShield(TX_PIN, OUTPUT_ENABLE_PIN);
-
-// UDP
+// Configuració de la xarxa WiFi
+//const char* ssid = "NOM_DE_LA_TEVA_XARXA";
+//const char* password = "CONTRASENYA";
 WiFiUDP udp;
 unsigned int localUdpPort = 4210;  // Port UDP local
 char incomingPacket[51];  // Buffer per rebre 50 caràcters més '\0'
@@ -45,6 +38,13 @@ IPAddress remoteIp;
 unsigned int remotePort;
 
 //
+int val1[3];
+int value = 0;
+int addrp = 0;
+int addrh = 0;
+int j     = 0;
+int f     = 0;
+int pannell;
 int lmax;
 
 char buffer[20];
@@ -59,18 +59,76 @@ int estat  = 0;
 int dada   = 0;
 int modul  = 0;
 //
+int angle1 = 0;
+int angle2 = 80;
+int angle3 = 160;
 int cicle  = 50;
 
-byte  DMX[520];  // Matriu total dmx
-byte  dmx[ 40];  // matriu rebuda dmx
+byte  Servos[ 25] = {90, 90, 90, 90, 90, 90, 90, 90, 90, 90,  90, 90, 90, 90, 90, 90, 90, 90, 90, 90,  90, 90, 90, 90, 90};  // valors inicials
+byte  spos[ 25];
 
-int   c = 0;
+// Configuració dels servos
+uint8_t servoValues[25];  // Array per emmagatzemar els valors dels servos
+
+// Inicialitza els dos mòduls PCA9685 amb les seves adreces I2C
+Adafruit_PWMServoDriver pca1 = Adafruit_PWMServoDriver(0x40); // Mòdul 1 a l'adreça I2C 0x40
+Adafruit_PWMServoDriver pca2 = Adafruit_PWMServoDriver(0x41); // Mòdul 2 a l'adreça I2C 0x41
+
+// Definicions dels límits del servo
+// #define SERVO_MIN 150  // Pols mínim per a la posició 0 graus
+//#define SERVO_MAX 600  // Pols màxim per a la posició 180 graus
+// Definicions dels límits del servo
+#define SERVO_MIN 150  // Pols mínim per a la posició 0 graus
+#define SERVO_MAX 600  // Pols màxim per a la posició 180 graus
+
+int c = 0;
+
+//
+// Llegir adreça
+//
+int Llegir_addr()
+{
+    // Escriu els valors inicials al PCF8574
+    Wire.beginTransmission(addressi);
+    Wire.write(B00001111); // Exemple de dades a enviar
+    Wire.write(B00000000);
+    if (Wire.endTransmission() != 0) { // Comprova errors de transmissió
+        Serial.println("Error en la transmissió I2C");
+        return 256;
+    }
+
+    // Sol·licita 2 bytes del dispositiu
+    if (Wire.requestFrom(addressi, 2) != 2) { // Comprova si arriben 2 bytes
+        Serial.println("No s'han rebut els bytes esperats");
+        return 256;
+    }
+
+    // Llegeix els bytes rebuts
+    for (int j = 0; j < 2; j++) {
+        if (Wire.available()) {
+            val1[j] = Wire.read();
+        }
+    }
+
+    // Processa els valors rebuts
+    addrp = val1[0] & 0x0F;
+    addrh = val1[1] & 0xFF;
+
+    // Depuració
+  //  Serial.print("addrp: ");
+  //  Serial.println(addrp, HEX);
+  //  Serial.print("addrh: ");
+  //  Serial.println(addrh, HEX);
+
+    return addrp;
+}
 
 // Envia el vector de servos
-void envia_dmx(){
-  for (int i = 0; i < 512; i++){
-    dmxShield.sendByte(i, DMX[i]);
-    delay(10);   
+void envia_servos(){
+  for (int i = 0; i < 12; i++){
+    pca1.setPWM(i, 0, map(Servos[i],    0, 180, SERVO_MIN, SERVO_MAX));
+    pca2.setPWM(i, 0, map(Servos[i+12], 0, 180, SERVO_MIN, SERVO_MAX));
+    delay(5);   
   }
 }
 
@@ -79,18 +137,21 @@ void envia_dmx(){
 //
 void setup_wifi() {
 //
-  int i = 0;
   delay(100);
 //
 // Assigna una adreça estàtica per cada rusc
-   IPAddress local_IP(192, 168, 10, 30);        // adreça IP
+#ifdef CASA
+   IPAddress local_IP(192, 168, 2, 10+addrp);   // adreça IP (depèn del rusc)
+   IPAddress gateway( 192, 168, 2, 1);          // IP del router
+#else
+   IPAddress local_IP(192, 168, 10, 10+addrp);  // adreça IP
    IPAddress gateway( 192, 168, 10, 1);         // IP del router
-
+#endif
    IPAddress subnet(255, 255, 255, 0);          // màscara
 //
 #ifdef LCDdebug
   lcd_setCursor(12, 1);  lcd_print("                ");
-  lcd_setCursor(12, 1);  lcd_print(ssid);       // visualitza ssid
+  lcd_setCursor(12, 1);  lcd_print(ssid);   // visualitza ssid
   delay(500);
 #endif
 //
@@ -116,13 +177,13 @@ void setup_wifi() {
     ESP.restart();
   }
 //
-  Serial.println();
+Serial.println();
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print("*");
 #ifdef LCDdebug
-    if (i == 0) {i = 1;  lcd_setCursor(14, 0);  lcd_print(" *");} // Mentre intenta connectar
-    else        {i = 0;  lcd_setCursor(14, 0);  lcd_print("* ");}
+    if (f == 0) {f = 1;  lcd_setCursor(14, 0);  lcd_print(" *");} // Mentre intenta connectar
+    else        {f = 0;  lcd_setCursor(14, 0);  lcd_print("* ");}
 #endif
  }
 //
@@ -137,6 +198,9 @@ void setup_wifi() {
 //  
 }   //  setup_wifi
 //
+//
+//
+
 
 void udp_pkt()
 {
@@ -156,8 +220,7 @@ int packetSize = udp.parsePacket();
     lmax = len;
 //
 #ifdef LCDdebug
-  lcd_setCursor( 10, 3);
-  lcd_print(String(pks).c_str());   // mostra nombre de paquets rebuts
+  lcd_setCursor( 10, 3);  lcd_print(String(pks).c_str());   // mostra nombre de paquets rebuts
 #endif
 //
     for (int i = 0; i < len; i++) {
@@ -178,11 +241,101 @@ int packetSize = udp.parsePacket();
     }  // for
   }    // if(packetSize)
 //
+//
 }
 
-void descodifica() {
+
+// diverses proves de test de servos
+void descodifica1()
+{
+
+  for (int i = 0; i<16; i++){
+    pca1.setPWM(i, 0, map(angle2, 0, 180, SERVO_MIN, SERVO_MAX));
+  }
+  for (int i = 0; i<16; i++){
+    pca2.setPWM(i, 0, map(angle2, 0, 180, SERVO_MIN, SERVO_MAX));
+  }
+    delay(cicle);
+  for (int i = 0; i<16; i++){
+    pca1.setPWM(i, 0, map(angle1, 0, 180, SERVO_MIN, SERVO_MAX));
+  }
+  for (int i = 0; i<16; i++){
+    pca2.setPWM(i, 0, map(angle1, 0, 180, SERVO_MIN, SERVO_MAX));
+  }
+    delay(cicle);
+  for (int i = 0; i<16; i++){
+    pca1.setPWM(i, 0, map(angle2, 0, 180, SERVO_MIN, SERVO_MAX));
+  }
+  for (int i = 0; i<16; i++){
+    pca2.setPWM(i, 0, map(angle2, 0, 180, SERVO_MIN, SERVO_MAX));
+  }
+    delay(cicle);
+  for (int i = 0; i<16; i++){
+    pca1.setPWM(i, 0, map(angle3, 0, 180, SERVO_MIN, SERVO_MAX));
+  }
+  for (int i = 0; i<16; i++){
+    pca2.setPWM(i, 0, map(angle3, 0, 180, SERVO_MIN, SERVO_MAX));
+  }
+    delay(cicle);
+  for (int i = 0; i<16; i++){
+    pca1.setPWM(i, 0, map(angle2, 0, 180, SERVO_MIN, SERVO_MAX));
+  }
+  for (int i = 0; i<16; i++){
+    pca2.setPWM(i, 0, map(angle2, 0, 180, SERVO_MIN, SERVO_MAX));
+  }
+    delay(cicle);
+
+}
+
+// diverses proves de test de servos
+void descodifica2()
+{
+
+  for (int i = 0; i<16; i++){
+    pca1.setPWM(i, 0, map(angle1, 0, 180, SERVO_MIN, SERVO_MAX));
+  }
+  for (int i = 0; i<16; i++){
+    pca2.setPWM(i, 0, map(angle1, 0, 180, SERVO_MIN, SERVO_MAX));
+  }
+    delay(cicle);
+  for (int i = 0; i<16; i++){
+    pca1.setPWM(i, 0, map(angle3, 0, 180, SERVO_MIN, SERVO_MAX));
+  }
+  for (int i = 0; i<16; i++){
+    pca2.setPWM(i, 0, map(angle3, 0, 180, SERVO_MIN, SERVO_MAX));
+  }
+    delay(cicle);
+
+}
+
+// diverses proves de test de servos
+void descodifica()
+{
+for (int j = 0; j<160; j=j+4){
+    for (int i = 0; i<16; i++){
+      pca1.setPWM(i, 0, map(j, 0, 180, SERVO_MIN, SERVO_MAX));
+    }
+    for (int i = 0; i<16; i++){
+      pca2.setPWM(i, 0, map(j, 0, 180, SERVO_MIN, SERVO_MAX));
+    }
+      delay(cicle);
+  }
+
+for (int j = 160; j>0; j=j-4){
+    for (int i = 0; i<16; i++){
+      pca1.setPWM(i, 0, map(j, 0, 180, SERVO_MIN, SERVO_MAX));
+    }
+    for (int i = 0; i<16; i++){
+      pca2.setPWM(i, 0, map(j, 0, 180, SERVO_MIN, SERVO_MAX));
+    }
+      delay(cicle);
+  }
+
+}
+
+void descodificam() {
 // descodifica els missatge rebuts a callback() per llargada de missatge
-// per DMX, els 4 primers bytes són l'adreça, els 30 següents són els valors dels registres
+//
 //  
   if (dada == 1) { // Si ha arribat un missatge ... processar
 //  
@@ -190,66 +343,83 @@ void descodifica() {
 //
 // Rusc Clear
 //
-  case 34:    // 34 bytes   
+  case 50:    // 50 bytes   
       {
-         modul  = int(nibble[0]) * 2048 + int(nibble[1]) * 256 + int(nibble[2]) * 16 + int(nibble[3]);
-         modul  = modul & 0x01FF;
+         modul  = int(nibble[0]) * 16 + int(nibble[1]);
 
-         for (int i = 0; i < 30; i++){
-           dmx[i/2] = int(nibble[4 + i * 2]) * 16 + int(nibble[5 + i * 2]);
-           i++;
+         for (int i = 0; i < 24; i++){
+           spos[i] = int(nibble[2 + i * 2]) * 16 + int(nibble[3 + i * 2]);
+           Servos[i] = map(spos[i],0,255,20,160);
          }
-
-         for (int i = 0; i < 15; i++){
-           DMX[i + modul] = dmx[i] ;
-         }
-
-         // cal transferir les dades al arrai DMX
-         envia_dmx();
+         envia_servos();
 //
-         break;
-
-     }         // if lmax == 34
+          break;
+     } // if lmax == 2
 //
 //
 //  
   default:
       break;
 //
-  }            // switch-case
+  }  // switch-case
 //
-  dada = 0;    // acabat el processat, espera el següent
+  dada = 0;  // acabat el processat, espera el següent
 //  
   }  // if dada==1
-}  // descodificam
+}    // descodificam
 //
 //
 
+
+
 void setup() {
-//  Inicialment esborra el vector
-  for (int i = 0;i < 512; i++) {
-    DMX[i] = 0;
-  }
   Serial.begin(115200);
-  Wire.begin();    // Inicia la comunicació I2C
+  Wire.begin(); // Inicia la comunicació I2C
 #ifdef LCDdebug
-  lcd_init();      // Inicia el display
+  lcd_init();    // Inicia el display
   lcd_print("Temps de flors 2025"); // Escriu un missatge
 #endif
   delay(100);
   Serial.println();
   Serial.println();
   Serial.println("TDF 2025");
+  // Inicia els mòduls PCA9685
+  pca1.begin();
+  pca1.setPWMFreq(50); // Estableix la freqüència PWM a 50 Hz per als servos
 
-  dmxShield.begin();
+  pca2.begin();
+  pca2.setPWMFreq(50); // Estableix la mateixa freqüència per al segon mòdul
 
-  delay(10);                           // Espera perquè la configuració es faci efectiva
+  delay(10); // Espera perquè la configuració es faci efectiva
 
+  //                                   // Llegeix l'adreça de rusc dels interruptors
+  Wire.beginTransmission(addressi);   // Transmit to device number 44 (0x2C)
+  Wire.write(B00001111);
+  Wire.write(B00000000);
+  Wire.endTransmission();            // Stop transmitting
+//
+  Wire.requestFrom(addressi, 2);      // Solicitar 2 bytes del esclau #20 .. #27
+    while(Wire.available()) {
+        val1[j] = Wire.read();       // Receive a byte as character
+        j++;
+    }
+  addrp = val1[0] & 0x0F;
+  addrh = val1[1] & 0xFF;
+  Wire.endTransmission();
+//
+  pannell = addrp & 0x07;        // adreça del rusc
+//
+#ifdef LCDdebug
+  sprintf(buffer, "Hex: 0x%X", addrp);
+  lcd_setCursor(0, 1);
+  lcd_print(buffer);
+#endif
 //
   setup_wifi();   // Setup WiFi  *****
 //
-  Serial.println("exit setup");
+Serial.println("exit setup");
 }
+
 
 void loop() {
   c++;
@@ -259,7 +429,16 @@ void loop() {
   snprintf(buffer, sizeof(buffer), "Lmax: %d", lmax);
   lcd_print(buffer);   // Mostra els segons transcorreguts
 #endif
+int a = Llegir_addr();
+//  Serial.println(a);
+#ifdef LCDdebug
+    sprintf(buffer, "Hex: 0x%X", a);
+    lcd_setCursor(0, 1);
+    lcd_print(buffer);
+#endif
 
-  udp_pkt();      // recull o rep paquets
-  descodifica();  // descodifica els missatges
+  udp_pkt();      // Paquets
+  descodificam();  // descodifica els missatges
+
+   // Aquí pots afegir més moviments segons les teves necessitats
 }
